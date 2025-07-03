@@ -1,15 +1,16 @@
 # ────────────────────────────────────────────────────────────────────────────
-# FastTrack Logistics • Streamlit Dashboard
-# ────────────────────────────────────────────────────────────────────────────
-# Tips:
-# • Make sure `requirements.txt` (see below) sits in the same folder as this file.
-# • Streamlit Cloud will use it to pre-install Plotly & friends.
-# • If Plotly somehow isn’t installed, the fallback will show Altair charts instead.
+# FastTrack Logistics • Streamlit Dashboard (v2)
+# Robust to column-name variations in the CSV
 # ────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
+import pandas as pd
+import numpy as np
+import re
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LinearRegression
 
-# ---- safe Plotly import (optional fallback) --------------------------------
+# ---- Optional Plotly import with graceful fallback ------------------------
 PLOTLY_OK = True
 try:
     import plotly.express as px
@@ -17,14 +18,10 @@ except ModuleNotFoundError:
     PLOTLY_OK = False
     st.warning(
         "⚠️ Plotly isn’t installed. Charts will fall back to Altair.\n"
-        "Ensure `plotly>=5.16.0` is listed in requirements.txt."
+        "Ensure `plotly>=5.16.0` is in requirements.txt."
     )
-
-import pandas as pd
-import numpy as np
 import altair as alt
-from sklearn.cluster import KMeans
-from sklearn.linear_model import LinearRegression
+# ---------------------------------------------------------------------------
 
 st.set_page_config(
     page_title="FastTrack Logistics Dashboard",
@@ -33,29 +30,59 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# 1. Load data
+# 1. Load & harmonise data
 # ---------------------------------------------------------------------------
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    cat_cols = df.select_dtypes(include="object").columns
-    df[cat_cols] = df[cat_cols].astype("category")
+
+    # normalise column names: strip → lower → spaces→underscores
+    def normalise(col):
+        col = col.strip()
+        col = re.sub(r"\\s+", "_", col)
+        return col.lower()
+
+    df.columns = [normalise(c) for c in df.columns]
+
+    # down-cast object columns to category
+    obj_cols = df.select_dtypes(include="object").columns
+    df[obj_cols] = df[obj_cols].astype("category")
     return df
 
 
-DATA_PATH = "fasttrack_survey_10k.csv"  # ✏️ change if your CSV name differs
-df = load_data(DATA_PATH)
+DATA_PATH = "fasttrack_survey_10k.csv"  # change if your file differs
+try:
+    df = load_data(DATA_PATH)
+except FileNotFoundError:
+    st.error(f"CSV file '{DATA_PATH}' not found. "
+             "Place it in the same folder or update DATA_PATH.")
+    st.stop()
 
-# Sidebar filters
-st.sidebar.header("Filters")
-origins = st.sidebar.multiselect(
-    "Origin city", options=list(df["origin_city"].cat.categories), default=[]
-)
-if origins:
-    df = df[df["origin_city"].isin(origins)]
+# verify mandatory columns exist
+REQUIRED = [
+    "origin_city", "pct_same_day", "pct_4hr", "shipments_per_day",
+    "avg_distance_km", "cur_delivery_time_hr",
+    "cur_cost_aed", "delay_rate_pct", "delay_churn_pct"
+]
+missing = [c for c in REQUIRED if c not in df.columns]
+if missing:
+    st.error("Missing columns in CSV: " + ", ".join(missing))
+    st.stop()
 
 # ---------------------------------------------------------------------------
-# 2. Tabs for the four feasibility buckets
+# 2. Sidebar filters
+# ---------------------------------------------------------------------------
+st.sidebar.header("Filters")
+
+origin_opts = df["origin_city"].cat.categories.tolist()
+selected_origins = st.sidebar.multiselect(
+    "Origin city", options=origin_opts, default=[]
+)
+if selected_origins:
+    df = df[df["origin_city"].isin(selected_origins)]
+
+# ---------------------------------------------------------------------------
+# 3. Dashboard Tabs
 # ---------------------------------------------------------------------------
 t1, t2, t3, t4 = st.tabs(
     [
@@ -101,7 +128,6 @@ with t1:
         )
         st.altair_chart(chart, use_container_width=True)
 
-
 # ---------------------------------------------------------------------------
 # Tab 2 – Operational Feasibility
 # ---------------------------------------------------------------------------
@@ -115,11 +141,7 @@ with t2:
     r2 = model.score(X, y)
 
     chart_df = pd.DataFrame(
-        {
-            "avg_distance_km": X.squeeze(),
-            "actual": y,
-            "predicted": pred,
-        }
+        {"avg_distance_km": X.squeeze(), "actual": y, "predicted": pred}
     )
 
     if PLOTLY_OK:
@@ -142,8 +164,10 @@ with t2:
             .mark_line()
             .encode(x="avg_distance_km", y="actual")
         )
-        st.altair_chart((base + line).properties(title=f"R² = {r2:.3f}"), use_container_width=True)
-
+        st.altair_chart(
+            (base + line).properties(title=f"R² = {r2:.3f}"),
+            use_container_width=True,
+        )
 
 # ---------------------------------------------------------------------------
 # Tab 3 – Financial Viability
@@ -167,7 +191,6 @@ with t3:
             .properties(width="container")
         )
         st.altair_chart(chart, use_container_width=True)
-
 
 # ---------------------------------------------------------------------------
 # Tab 4 – Competitive Benchmarking
