@@ -1,0 +1,10 @@
+streamlit==1.36.0
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+plotly>=5.22.0
+statsmodels
+mlxtend
+scipy
